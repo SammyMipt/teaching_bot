@@ -1,0 +1,4 @@
+user_id,role,full_name,group,email,status,created_at,code_used
+264451321,owner,Клименок Кирилл Леонидович,нет,klimenok.kl@gmail.com,active,1754872395,TA-2025
+555555,student,Тестов Бот Кириллович,MFAI-01,bot@bot.bot,active,1754873072,PHYS-2025
+777777,instructor,Ботов Препод Кириллович,нет,mail@bot.bot,active,1754873411,TA-2025

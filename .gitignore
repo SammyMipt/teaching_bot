@@ -1,0 +1,7 @@
+/.teaching_bot-venv
+/.venv
+__pycache__/
+*.pyc
+.env
+dist/
+build/
