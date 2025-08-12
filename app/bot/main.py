@@ -20,6 +20,13 @@ from app.storage.yadisk import (
 )
 from app.storage.grades import add_or_update_grade, get_grade
 from app.storage.users import get_user, upsert_user, list_pending_instructors
+from app.bot.handlers import names as names_handlers
+from app.bot.handlers import grading as grading_handlers
+from app.bot.auth import (
+    resolve_role, resolve_role_for_id,
+    effective_user_id, require_roles,
+    set_impersonation,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -29,46 +36,46 @@ router = Router()
 # ---------- DEV: имперсонация ----------
 impersonate_map: dict[int, int] = {}  # real_owner_id -> acting_user_id
 
-def effective_user_id(msg: Message) -> int:
-    real_id = msg.from_user.id
-    if settings.DEV_ALLOW_AS and real_id in settings.owner_ids and real_id in impersonate_map:
-        return impersonate_map[real_id]
-    return real_id
+# def effective_user_id(msg: Message) -> int:
+#     real_id = msg.from_user.id
+#     if settings.DEV_ALLOW_AS and real_id in settings.owner_ids and real_id in impersonate_map:
+#         return impersonate_map[real_id]
+#     return real_id
 
 # ---------- Роли ----------
-def resolve_role_for_id(user_id: int) -> str:
-    if user_id in settings.owner_ids:
-        return "owner"
-    r = get_user(user_id)
-    return r["role"] if r else "guest"
+# def resolve_role_for_id(user_id: int) -> str:
+#     if user_id in settings.owner_ids:
+#         return "owner"
+#     r = get_user(user_id)
+#     return r["role"] if r else "guest"
 
-def resolve_role(msg_or_id) -> str:
-    if hasattr(msg_or_id, "from_user"):
-        uid = effective_user_id(msg_or_id)
-    else:
-        uid = int(msg_or_id)
-    return resolve_role_for_id(uid)
+# def resolve_role(msg_or_id) -> str:
+#     if hasattr(msg_or_id, "from_user"):
+#         uid = effective_user_id(msg_or_id)
+#     else:
+#         uid = int(msg_or_id)
+#     return resolve_role_for_id(uid)
 
 def is_active(user_id: int) -> bool:
     r = get_user(user_id)
     return bool(r and r.get("status") == "active")
 
-def require_roles(roles: set[str]):
-    def decorator(handler):
-        @wraps(handler)
-        async def wrapper(msg: Message, *args, **kwargs):
-            # используем твою функцию определения роли
-            uid = effective_user_id(msg)
-            role = resolve_role(uid)
-            if role not in roles:
-                await msg.answer("Недостаточно прав.")
-                return
-            if role != "owner" and not is_active(uid):
-                await msg.answer("Ваш профиль ожидает подтверждения или неактивен.")
-                return
-            return await handler(msg, *args, **kwargs)
-        return wrapper
-    return decorator
+# def require_roles(roles: set[str]):
+#     def decorator(handler):
+#         @wraps(handler)
+#         async def wrapper(msg: Message, *args, **kwargs):
+#             # используем твою функцию определения роли
+#             uid = effective_user_id(msg)
+#             role = resolve_role(uid)
+#             if role not in roles:
+#                 await msg.answer("Недостаточно прав.")
+#                 return
+#             if role != "owner" and not is_active(uid):
+#                 await msg.answer("Ваш профиль ожидает подтверждения или неактивен.")
+#                 return
+#             return await handler(msg, *args, **kwargs)
+#         return wrapper
+#     return decorator
 
 # ---------- Регистрация (FSM) ----------
 class Reg(StatesGroup):
@@ -99,13 +106,25 @@ async def ping_storage(msg: Message):
 @router.message(Command("whoami"))
 async def whoami(msg: Message):
     real_id = msg.from_user.id
-    eff_id = effective_user_id(msg)
-    r = get_user(eff_id)
-    role = resolve_role(eff_id)
-    status = "active (owner)" if role == "owner" else (r.get("status") if r else "-")
+    acting_id = effective_user_id(msg)
+
+    # роль можно получить либо от сообщения, либо по acting_id
+    role = resolve_role(msg)  # или: resolve_role_for_id(acting_id)
+    rec  = get_user(acting_id)
+
+    status = "active (owner)" if role == "owner" else (rec.get("status") if rec else "-")
+    full_name = rec.get("full_name", "-") if rec else "-"
+    group = rec.get("group", "-") if rec else "-"
+    email = rec.get("email", "-") if rec else "-"
+
     await msg.answer(
-        f"real_id={real_id}\nacting_id={eff_id}\nrole={role}\nstatus={status}\n"
-        f"ФИО: {r.get('full_name','-') if r else '-'}\nГруппа: {r.get('group','-') if r else '-'}\nEmail: {r.get('email','-') if r else '-'}"
+        f"real_id={real_id}\n"
+        f"acting_id={acting_id}\n"
+        f"role={role}\n"
+        f"status={status}\n"
+        f"ФИО: {full_name}\n"
+        f"Группа: {group}\n"
+        f"Email: {email}"
     )
 
 @router.message(Command("as"))
@@ -120,18 +139,22 @@ async def as_role(msg: Message, command: CommandObject):
 
 @router.message(Command("impersonate"))
 async def cmd_impersonate(msg: Message, command: CommandObject):
-    if not (settings.DEV_ALLOW_AS and msg.from_user.id in settings.owner_ids):
+    # Разрешаем только владельцу и только если DEV_ALLOW_AS=True
+    if not (getattr(settings, "DEV_ALLOW_AS", False) and msg.from_user.id in settings.owner_ids):
         return await msg.answer("Недоступно.")
     args = (command.args or "").strip()
     if not args.isdigit():
         return await msg.answer("Использование: /impersonate <user_id>")
     target = int(args)
-    impersonate_map[msg.from_user.id] = target
-    await msg.answer(f"Имперсонация включена. Теперь вы действуете как user_id={target}.")
+
+    # включаем имперсонацию через общий стор
+    set_impersonation(msg.from_user.id, target)
+    return await msg.answer(f"Имперсонация включена. Теперь вы действуете как user_id={target}.")
 
 @router.message(Command("unimpersonate"))
 async def cmd_unimpersonate(msg: Message):
-    impersonate_map.pop(msg.from_user.id, None)
+    # impersonate_map.pop(msg.from_user.id, None)
+    set_impersonation(msg.from_user.id, None)
     await msg.answer("Имперсонация выключена.")
 
 # ---------- Регистрация ----------
@@ -353,6 +376,8 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+    dp.include_router(names_handlers.router)
+    dp.include_router(grading_handlers.router)
     # 🔧 нормализация владельцев в реестре
     now = str(int(time.time()))
     for oid in settings.owner_ids:
