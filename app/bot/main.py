@@ -22,11 +22,14 @@ from app.storage.grades import add_or_update_grade, get_grade
 from app.storage.users import get_user, upsert_user, list_pending_instructors
 from app.bot.handlers import names as names_handlers
 from app.bot.handlers import grading as grading_handlers
+from app.bot.handlers import registration_auto as reg_auto_handlers
+from app.bot.handlers.registration_auto import try_autolink_after_register
 from app.bot.auth import (
     resolve_role, resolve_role_for_id,
     effective_user_id, require_roles,
     set_impersonation,
 )
+from app.bot.auth import is_impersonating
 
 
 logging.basicConfig(level=logging.INFO)
@@ -160,6 +163,13 @@ async def cmd_unimpersonate(msg: Message):
 # ---------- Регистрация ----------
 @router.message(Command("register"))
 async def cmd_register(msg: Message, state: FSMContext):
+    if is_impersonating(msg) and msg.from_user.id in settings.owner_ids:
+        return await msg.answer(
+            "⚠️ Внимание: сейчас включена имперсонация.\n"
+            "Вы регистрируете *не свой* аккаунт, а acting_id="
+            f"{effective_user_id(msg)}.\n"
+            "Если это случайно — отправьте /unimpersonate и запустите /register снова."
+        )
     uid = effective_user_id(msg)
     if get_user(uid):
         return await msg.answer("Вы уже зарегистрированы. Команда: /whoami")
@@ -210,6 +220,13 @@ async def reg_code(msg: Message, state: FSMContext):
         "created_at": str(int(time.time())),
         "code_used": code,
     })
+    await try_autolink_after_register(
+        msg,
+        state,  # важен живой FSMContext — вызываем до state.clear()
+        email=data["email"],
+        last_name_ru=(data["full_name"].split()[0] if data.get("full_name") else None),
+        group=data.get("group")
+    )
     await state.clear()
     if role == "student":
         await msg.answer("Готово! Вы зарегистрированы как студент. Команда: /whoami")
@@ -300,23 +317,6 @@ async def pull(msg: Message, command: CommandObject):
             await msg.answer(f"Не удалось отправить {rp}: {e}")
     await msg.answer(f"Готово. Отправлено: {sent}/{len(files)}")
 
-@router.message(Command("grade"))
-@require_roles({"instructor","owner"})
-async def grade(msg: Message, command: CommandObject):
-    # /grade <user_id> <week> <score> [комментарий]
-    parts = (command.args or "").split(maxsplit=3)
-    if len(parts) < 3:
-        return await msg.answer("Использование: /grade <user_id> <week> <score> [комментарий]")
-    try:
-        student_id = int(parts[0])
-        week = parts[1]
-        score = float(parts[2])
-    except ValueError:
-        return await msg.answer("user_id — число, score — число (например, 8 или 8.5).")
-    comment = parts[3] if len(parts) == 4 else ""
-    add_or_update_grade(student_id, week, score, comment)
-    await msg.answer(f"Оценка сохранена: user={student_id}, неделя={week}, балл={score}.")
-
 @router.message(Command("mygrade"))
 async def mygrade(msg: Message, command: CommandObject):
     week = (command.args or "").strip()
@@ -375,9 +375,12 @@ async def main():
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
     dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-    dp.include_router(names_handlers.router)
+    dp.include_router(reg_auto_handlers.router)   # <— новый роутер автопривязки
     dp.include_router(grading_handlers.router)
+    dp.include_router(names_handlers.router)
+    dp.include_router(router)
+
+
     # 🔧 нормализация владельцев в реестре
     now = str(int(time.time()))
     for oid in settings.owner_ids:

@@ -41,3 +41,7 @@ def set_impersonation(real_id: int, acting_id: int | None):
         _user_impersonation.pop(real_id, None)
     else:
         _user_impersonation[real_id] = acting_id
+
+def is_impersonating(msg: Message) -> bool:
+    real = msg.from_user.id
+    return effective_user_id(msg) != real
