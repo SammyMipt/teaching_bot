@@ -24,7 +24,8 @@ router = Router()
 
 # ---------- FSM состояния ----------
 class SmartReg(StatesGroup):
-    full_name = State()
+    lastname = State()
+    firstname = State()
     group = State()
     email = State()
     code = State()
@@ -120,20 +121,33 @@ async def smart_register_start(msg: Message, state: FSMContext):
     if get_user(uid):
         return await msg.answer("Вы уже зарегистрированы. Команда: /whoami")
     
-    await state.set_state(SmartReg.full_name)
+    await state.set_state(SmartReg.lastname)
     await msg.answer(
         "👋 Добро пожаловать! Начинаем регистрацию.\n\n"
-        "📝 Введите ваше полное ФИО (как в документах):\n"
-        "Пример: Иванов Иван Иванович"
+        "📝 Введите вашу фамилию:\n"
+        "Пример: Иванов"
     )
 
-@router.message(SmartReg.full_name)
-async def smart_reg_full_name(msg: Message, state: FSMContext):
-    full_name = msg.text.strip()
-    if len(full_name) < 5:
-        return await msg.answer("ФИО слишком короткое. Введите полное имя:")
+@router.message(SmartReg.lastname)
+async def smart_reg_lastname(msg: Message, state: FSMContext):
+    lastname = msg.text.strip()
+    if len(lastname) < 2:
+        return await msg.answer("Фамилия слишком короткая. Введите фамилию:")
     
-    await state.update_data(full_name=full_name)
+    await state.update_data(lastname=lastname)
+    await state.set_state(SmartReg.firstname)
+    await msg.answer(
+        "👤 Введите ваше имя:\n"
+        "Пример: Иван"
+    )
+
+@router.message(SmartReg.firstname)
+async def smart_reg_firstname(msg: Message, state: FSMContext):
+    firstname = msg.text.strip()
+    if len(firstname) < 2:
+        return await msg.answer("Имя слишком короткое. Введите имя:")
+    
+    await state.update_data(firstname=firstname)
     await state.set_state(SmartReg.group)
     await msg.answer(
         "🎓 Введите вашу группу:\n"
@@ -161,11 +175,7 @@ async def smart_reg_email(msg: Message, state: FSMContext):
     
     await state.update_data(email=email)
     await state.set_state(SmartReg.code)
-    await msg.answer(
-        "🔐 Введите код курса или код преподавателя:\n"
-        f"Для студентов: {settings.COURSE_CODE}\n"
-        f"Для преподавателей: {settings.INSTRUCTOR_CODE}"
-    )
+    await msg.answer("🔐 Введите код курса или код преподавателя")
 
 @router.message(SmartReg.code)
 async def smart_reg_code(msg: Message, state: FSMContext):
@@ -190,14 +200,17 @@ async def smart_reg_code(msg: Message, state: FSMContext):
     if role == "student":
         # Для студентов - ищем в ростере
         await msg.answer("🔍 Ищу вас в списке студентов...")
-        await process_student_matching(msg, state, data["full_name"], data["group"], data["email"])
+        await process_student_matching(msg, state, data["lastname"], data["firstname"], data["group"], data["email"])
     else:
         # Для преподавателей и owner'ов - сразу регистрируем
         await finalize_registration(msg, state, data, role, status, code, skip_roster=True)
 
-async def process_student_matching(msg: Message, state: FSMContext, full_name: str, group: str, email: str):
+async def process_student_matching(msg: Message, state: FSMContext, lastname: str, firstname: str, group: str, email: str):
     """Обрабатывает поиск студента в ростере"""
     uid = effective_user_id(msg)
+    
+    # Формируем полное имя для поиска
+    full_name = f"{lastname} {firstname}"
     
     # Ищем совпадения
     matches = find_student_matches(full_name, group, email)
@@ -264,11 +277,12 @@ async def process_student_matching(msg: Message, state: FSMContext, full_name: s
         reason = "no_match" if not matches else "multiple_uncertain"
         
         # Сохраняем черновик
-        add_pending_registration(uid, username, full_name, group, email, reason)
+        full_name_for_save = f"{lastname} {firstname}"
+        add_pending_registration(uid, username, full_name_for_save, group, email, reason)
         
         # Уведомляем owner'а
         await notify_owner_about_problem(
-            msg.bot, uid, username, full_name, group, email, reason
+            msg.bot, uid, username, full_name_for_save, group, email, reason
         )
         
         await state.clear()
@@ -296,32 +310,39 @@ async def process_student_matching(msg: Message, state: FSMContext, full_name: s
 @router.callback_query(SmartReg.confirm_match, F.data == "match::confirm")
 async def confirm_match(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    uid = effective_user_id(callback)  # Вычисляем UID здесь
+    uid = effective_user_id(callback)
     
     # Завершаем регистрацию с выбранным студентом
     await finalize_registration_with_link(
         callback.message, state, data,
         data["selected_student_code"],
         data["selected_external_email"],
-        uid  # Передаем UID как параметр
+        uid
     )
     await callback.answer()
 
 @router.callback_query(SmartReg.confirm_match, F.data == "match::reject")
 async def reject_match(callback: CallbackQuery, state: FSMContext):
+    log.info("Обработка отклонения совпадения")
+    
     data = await state.get_data()
-    uid = effective_user_id(callback)  # ИСПРАВЛЕНО: callback вместо callback.message
+    uid = effective_user_id(callback)
     username = callback.from_user.username or "unknown"
+    
+    # Формируем полное имя из отдельных полей
+    full_name_for_save = f"{data['lastname']} {data['firstname']}"
+    
+    log.info(f"Отклонение: uid={uid}, full_name={full_name_for_save}")
     
     # Сохраняем как отклонившего варианты
     add_pending_registration(
-        uid, username, data["full_name"], data["group"], 
+        uid, username, full_name_for_save, data["group"], 
         data["email"], "rejected_all"
     )
     
     # Уведомляем owner'а
     await notify_owner_about_problem(
-        callback.bot, uid, username, data["full_name"], 
+        callback.bot, uid, username, full_name_for_save, 
         data["group"], data["email"], "rejected_all"
     )
     
@@ -340,16 +361,17 @@ async def choose_match(callback: CallbackQuery, state: FSMContext):
     if choice == "none":
         # Пользователь не выбрал ни один вариант
         data = await state.get_data()
-        uid = effective_user_id(callback)  # ИСПРАВЛЕНО
+        uid = effective_user_id(callback)
         username = callback.from_user.username or "unknown"
         
+        full_name_for_save = f"{data['lastname']} {data['firstname']}"
         add_pending_registration(
-            uid, username, data["full_name"], data["group"],
+            uid, username, full_name_for_save, data["group"],
             data["email"], "rejected_all"
         )
         
         await notify_owner_about_problem(
-            callback.bot, uid, username, data["full_name"],
+            callback.bot, uid, username, full_name_for_save,
             data["group"], data["email"], "rejected_all"
         )
         
@@ -381,7 +403,7 @@ async def choose_match(callback: CallbackQuery, state: FSMContext):
         callback.message, state, data,
         selected_match["student_code"],
         selected_match["external_email"],
-        effective_user_id(callback)  # Передаем UID как параметр
+        effective_user_id(callback)
     )
     await callback.answer()
 
@@ -418,10 +440,11 @@ async def finalize_registration(
     uid = effective_user_id(msg)
     
     # Создаём запись пользователя
+    full_name_for_save = f"{data['lastname']} {data['firstname']}"
     user_rec = {
         "user_id": str(uid),
         "role": role,
-        "full_name": data["full_name"],
+        "full_name": full_name_for_save,
         "group": data["group"],
         "email": data["email"],
         "status": status,
@@ -445,16 +468,16 @@ async def finalize_registration_with_link(
     data: dict,
     student_code: str,
     external_email: str,
-    uid: int  # Принимаем UID как параметр
+    uid: int
 ):
     """Завершает регистрацию студента с привязкой к ростеру"""
-    # uid уже передан как параметр, не вычисляем его заново
     
     # Создаём запись пользователя
+    full_name_for_save = f"{data['lastname']} {data['firstname']}"
     user_rec = {
         "user_id": str(uid),
         "role": data["role"],
-        "full_name": data["full_name"],
+        "full_name": full_name_for_save,
         "group": data["group"],
         "email": data["email"],
         "status": data["status"],
@@ -482,7 +505,7 @@ async def finalize_registration_with_link(
         # Уведомляем owner'а о конфликте
         username = msg.from_user.username if hasattr(msg, 'from_user') else "unknown"
         await notify_owner_about_problem(
-            msg.bot, uid, username, data["full_name"], 
+            msg.bot, uid, username, full_name_for_save, 
             data["group"], data["email"], "email_conflict"
         )
         return

@@ -34,4 +34,8 @@ pytest-cov = "^6.2.1"
 pythonpath = ["."]
 testpaths = ["tests"]
 
+[tool.poetry]
+name = "teaching-bot"
+version = "0.1.0"
+package-mode = false
 

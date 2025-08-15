@@ -65,56 +65,68 @@ async def ping_storage(msg: Message):
 async def whoami(msg: Message):
     real_id = msg.from_user.id
     acting_id = effective_user_id(msg)
+    is_impersonating_now = is_impersonating(msg)
 
     role = resolve_role(msg)
     rec = get_user(acting_id)
 
     status = "active (owner)" if role == "owner" else (rec.get("status") if rec else "-")
     
+    # Формируем Telegram ID
+    if is_impersonating_now:
+        telegram_info = f"real_id={real_id}\nacting_id={acting_id}"
+        impersonate_info = "\n🎭 ИМПЕРСОНАЦИЯ ВКЛЮЧЕНА"
+    else:
+        telegram_info = f"Telegram ID: {acting_id}"
+        impersonate_info = ""
+    
     # Пытаемся получить данные из ростера (если есть привязка)
     from app.storage import user_links, roster
     
-    link = user_links.get_link_by_user(acting_id)
-    if link and link.get("student_code"):
-        # Пользователь привязан - показываем данные из ростера
-        roster_data = roster.get_by_student_code(link["student_code"])
-        if roster_data:
-            # Приоритет русским именам
-            if roster_data.get('last_name_ru') and roster_data.get('first_name_ru'):
-                full_name = f"{roster_data['last_name_ru']} {roster_data['first_name_ru']}"
-                if roster_data.get('middle_name_ru'):
-                    full_name += f" {roster_data['middle_name_ru']}"
+    # Для студентов проверяем привязку к ростеру
+    if role == "student":
+        link = user_links.get_link_by_user(acting_id)
+        if link and link.get("student_code"):
+            # Пользователь привязан - показываем данные из ростера
+            roster_data = roster.get_by_student_code(link["student_code"])
+            if roster_data:
+                # Приоритет русским именам
+                if roster_data.get('last_name_ru') and roster_data.get('first_name_ru'):
+                    full_name = f"{roster_data['last_name_ru']} {roster_data['first_name_ru']}"
+                    if roster_data.get('middle_name_ru'):
+                        full_name += f" {roster_data['middle_name_ru']}"
+                else:
+                    full_name = f"{roster_data.get('last_name_en', '')} {roster_data.get('first_name_en', '')}"
+                    if roster_data.get('middle_name_en'):
+                        full_name += f" {roster_data.get('middle_name_en', '')}"
+                
+                group = roster_data.get('group', '-')
+                email = roster_data.get('external_email', '-')
+                student_code = roster_data.get('student_code', '-')
+                
+                # Добавляем информацию о привязке
+                link_info = f"\n🔗 Привязан к: {student_code}"
             else:
-                full_name = f"{roster_data.get('last_name_en', '')} {roster_data.get('first_name_en', '')}"
-                if roster_data.get('middle_name_en'):
-                    full_name += f" {roster_data.get('middle_name_en', '')}"
-            
-            group = roster_data.get('group', '-')
-            email = roster_data.get('external_email', '-')
-            student_code = roster_data.get('student_code', '-')
-            
-            # Добавляем информацию о привязке
-            link_info = f"\n🔗 Привязан к: {student_code}"
+                # Привязка есть, но данных в ростере нет (странная ситуация)
+                full_name = rec.get("full_name", "-") if rec else "-"
+                group = rec.get("group", "-") if rec else "-"
+                email = rec.get("email", "-") if rec else "-"
+                link_info = f"\n⚠️ Привязка: {link['student_code']} (данные не найдены в ростере)"
         else:
-            # Привязка есть, но данных в ростере нет (странная ситуация)
+            # Студент не привязан - показываем что ввел при регистрации
             full_name = rec.get("full_name", "-") if rec else "-"
             group = rec.get("group", "-") if rec else "-"
             email = rec.get("email", "-") if rec else "-"
-            link_info = f"\n⚠️ Привязка: {link['student_code']} (данные не найдены в ростере)"
+            link_info = "\n❌ Не привязан к ростеру"
     else:
-        # Пользователь не привязан - показываем что ввел при регистрации
+        # Для owner и instructor не показываем статус привязки
         full_name = rec.get("full_name", "-") if rec else "-"
         group = rec.get("group", "-") if rec else "-"
         email = rec.get("email", "-") if rec else "-"
-        link_info = "\n❌ Не привязан к ростеру"
-
-    impersonate_info = ""
-    if is_impersonating(msg):
-        impersonate_info = "\n🎭 ИМПЕРСОНАЦИЯ ВКЛЮЧЕНА"
+        link_info = ""
 
     await msg.answer(
-        f"real_id={real_id}\n"
-        f"acting_id={acting_id}\n"
+        f"{telegram_info}\n"
         f"role={role}\n"
         f"status={status}\n"
         f"ФИО: {full_name}\n"

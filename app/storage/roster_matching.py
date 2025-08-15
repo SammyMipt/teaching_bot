@@ -2,11 +2,14 @@
 Система поиска и сопоставления студентов с ростером
 """
 import re
+import logging
 from typing import List, Dict, Optional, Tuple
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 
 from app.storage import roster
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,11 +41,12 @@ def fuzzy_match_score(s1: str, s2: str) -> float:
 
 
 def extract_lastname_from_full_name(full_name: str) -> str:
-    """Извлекает фамилию из полного имени (последнее слово)"""
+    """Извлекает фамилию из полного имени (первое слово для русских имен)"""
     if not full_name:
         return ""
     parts = full_name.strip().split()
-    return parts[-1] if parts else ""
+    # Для русских имен фамилия обычно идет первой: "Петров Пётр Иванович"
+    return parts[0] if parts else ""
 
 
 def build_display_name(roster_row: dict) -> str:
@@ -100,6 +104,7 @@ def find_student_matches(
         return matches
     
     # Приоритет 2: Фамилия + группа (fuzzy matching)
+    log.info("Ищем по фамилии + группе...")
     for row in all_roster_data:
         # Проверяем русскую фамилию
         ru_lastname = row.get('last_name_ru', '')
@@ -114,8 +119,11 @@ def find_student_matches(
         # Точное совпадение группы (с небольшой толерантностью к регистру)
         group_match = group.strip().lower() == row_group.strip().lower() if group and row_group else False
         
-        # Если фамилия похожа (>0.7) И группа совпадает
-        if name_score > 0.7 and group_match:
+        log.debug(f"Проверяем {row['student_code']}: фамилия_score={name_score:.2f}, группа_match={group_match}")
+        
+        # Если фамилия похожа (>0.6) И группа совпадает
+        if name_score > 0.6 and group_match:
+            log.info(f"Найдено совпадение по фамилии+группе: {row['student_code']} (score={name_score:.2f})")
             matches.append(MatchResult(
                 student_code=row['student_code'],
                 external_email=row['external_email'],
@@ -130,6 +138,7 @@ def find_student_matches(
         return sorted(matches, key=lambda x: x.confidence, reverse=True)
     
     # Приоритет 3: Только фамилия (fuzzy matching)
+    log.info("Ищем только по фамилии...")
     for row in all_roster_data:
         ru_lastname = row.get('last_name_ru', '')
         en_lastname = row.get('last_name_en', '')
@@ -138,14 +147,17 @@ def find_student_matches(
         en_score = fuzzy_match_score(student_lastname, en_lastname)
         name_score = max(ru_score, en_score)
         
-        # Если фамилия достаточно похожа (>0.8 для более строгого отбора)
-        if name_score > 0.8:
+        log.debug(f"Проверяем {row['student_code']}: фамилия_score={name_score:.2f} (ru={ru_score:.2f}, en={en_score:.2f})")
+        
+        # Если фамилия достаточно похожа (>0.6 для более мягкого отбора)
+        if name_score > 0.6:
+            log.info(f"Найдено совпадение только по фамилии: {row['student_code']} (score={name_score:.2f})")
             matches.append(MatchResult(
                 student_code=row['student_code'],
                 external_email=row['external_email'],
                 display_name=build_display_name(row),
                 match_type="name_only",
-                confidence=name_score * 0.7,  # значительно снижаем за отсутствие группы
+                confidence=name_score * 0.6,  # значительно снижаем за отсутствие группы
                 roster_data=row
             ))
     
@@ -164,21 +176,30 @@ def validate_match_quality(matches: List[MatchResult]) -> Tuple[str, List[MatchR
     if not matches:
         return "none", []
     
+    log.info(f"Валидация совпадений: всего найдено {len(matches)}")
+    for m in matches:
+        log.info(f"  {m.student_code}: {m.match_type}, confidence={m.confidence:.2f}")
+    
     # Если есть точное совпадение по email
     email_matches = [m for m in matches if m.match_type == "email"]
     if email_matches:
+        log.info("Возвращаем точное совпадение по email")
         return "exact", email_matches[:1]
     
     # Если есть хорошие совпадения по фамилии+группе
-    name_group_matches = [m for m in matches if m.match_type == "name_group" and m.confidence > 0.8]
+    name_group_matches = [m for m in matches if m.match_type == "name_group" and m.confidence > 0.5]
     if len(name_group_matches) == 1:
+        log.info("Возвращаем единственное хорошее совпадение по фамилии+группе")
         return "good", name_group_matches
     elif len(name_group_matches) <= 3:
+        log.info(f"Возвращаем {len(name_group_matches)} совпадений по фамилии+группе")
         return "uncertain", name_group_matches
     
     # Если есть только совпадения по фамилии
-    name_only_matches = [m for m in matches if m.match_type == "name_only" and m.confidence > 0.85]
+    name_only_matches = [m for m in matches if m.match_type == "name_only" and m.confidence > 0.4]
     if len(name_only_matches) <= 3:
+        log.info(f"Возвращаем {len(name_only_matches)} совпадений только по фамилии")
         return "uncertain", name_only_matches
     
+    log.info("Ничего подходящего не найдено")
     return "none", []
