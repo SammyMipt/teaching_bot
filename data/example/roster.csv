@@ -1,0 +1,4 @@
+student_code,external_email,last_name_ru,first_name_ru,middle_name_ru,last_name_en,first_name_en,middle_name_en,group,tg_id,role
+S-999, s-999@u.edu,Тестов,Бот1,,Testov,Bot1,,MFAI-25-99,11111,
+S-998, s-998@u.edu, Тестов,Бот2,,Testov,Bot2,,MFAI-25-99,22222,
+S-997, s-997@u.edu,Тестов,Бот3,,Testov,Bot3,,MFAI-25-99,,
