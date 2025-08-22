@@ -139,7 +139,7 @@ def _slot_brief_row(start_ts, end_ts, mode: str, place: str, remains: int) -> st
     except Exception:
         return f"{start_ts}-{end_ts} {mode} {place} (мест: {remains})"
 
-@router.message(F.text.startswith("/week"))
+@router.message(F.text.startswith("/week_old"))
 async def week_booking(
     message: Message,
     actor_tg_id: int,  # Используем actor_tg_id из middleware

@@ -22,6 +22,7 @@ from app.services.users_service import UsersService
 from app.services.ta_prefs_service import TaPrefsService
 from app.services.booking_service import BookingService
 from app.services.assignments_service import AssignmentsService
+from app.services.weeks_service import WeeksService
 
 # Middlewares
 from app.bot.middlewares.actor_middleware import ActorMiddleware
@@ -56,6 +57,7 @@ async def main() -> None:
     ta_prefs = TaPrefsService(cfg.data_dir)
     bookings = BookingService(cfg.data_dir)
     assignments = AssignmentsService(cfg.data_dir)
+    weeks = WeeksService(cfg.data_dir)  # Новый сервис
 
     # Bootstrap owner (если в проекте есть ensure_owner)
     try:
@@ -86,7 +88,7 @@ async def main() -> None:
     dp["owner_id"] = cfg.owner_tg_id
     dp["ta_invite_code"] = cfg.ta_invite_code
     dp["assignments"] = assignments
-
+    dp["weeks"] = weeks  # Добавляем новый сервис
 
     # Routers
     dp.include_router(common_router)
