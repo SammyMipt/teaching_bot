@@ -88,14 +88,39 @@ async def help_cmd(message: Message, users: UsersService):
 
 @router.message(F.text == "/whoami")
 async def whoami(message: Message, users: UsersService):
-    real = users.get_by_tg(message.from_user.id)
-    actor_id = _resolve_actor_tg_id(message)
-    actor = users.get_by_tg(actor_id)
-    is_imp = (actor_id != message.from_user.id)
-    lines = [f"👤 RealID: {message.from_user.id} | role={_role_of(real)} | name={_full_name(real)}"]
-    if is_imp:
-        sc = (actor or {}).get("student_code", "—")
-        lines.append(f"🎭 ActingID: {actor_id} | role={_role_of(actor)} | name={_full_name(actor)} | student_code={_s(sc) or '—'}")
+    real_tg_id = message.from_user.id
+    actor_tg_id = _resolve_actor_tg_id(message)
+    is_impersonation = (actor_tg_id != real_tg_id)
+    
+    # Получаем данные реального пользователя
+    real_user = users.get_by_tg(real_tg_id)
+    real_role = _role_of(real_user)
+    real_name = _full_name(real_user)
+    real_id = _s(real_user.get("id") if real_user else "")
+    
+    lines = [
+        f"👤 <b>RealID:</b> {real_tg_id} | role={real_role} | name={real_name}"
+    ]
+    
+    # Добавляем ID только если он есть
+    if real_id:
+        lines.append(f"    ID: {real_id}")
+    
+    if is_impersonation:
+        # Получаем данные имперсонируемого пользователя
+        actor_user = users.get_by_tg(actor_tg_id)
+        actor_role = _role_of(actor_user)
+        actor_name = _full_name(actor_user)
+        actor_id = _s(actor_user.get("id") if actor_user else "")
+        
+        lines.append(f"🎭 <b>ActingID:</b> {actor_tg_id} | role={actor_role} | name={actor_name}")
+        
+        # Добавляем ID только если он есть
+        if actor_id:
+            lines.append(f"    ID: {actor_id}")
+        else:
+            lines.append(f"    ID: —")
     else:
-        lines.append("🎭 ActingID: —")
-    await message.answer("\n".join(lines))
+        lines.append("🎭 <b>ActingID:</b> —")
+    
+    await message.answer("\n".join(lines), parse_mode="HTML")

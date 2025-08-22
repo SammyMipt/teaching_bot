@@ -208,7 +208,15 @@ async def schedule_set_end(message: Message, state: FSMContext, ta_prefs: TaPref
     await message.answer("\n".join(lines), reply_markup=kb.as_markup())
 
 @router.callback_query(ScheduleFSM.confirm, F.data.in_(["sch:confirm","sch:cancel"]))
-async def schedule_confirm(cb: CallbackQuery,state: FSMContext,slots: SlotService,ta_prefs: TaPrefsService,users: UsersService):
+async def schedule_confirm(cb: CallbackQuery, state: FSMContext, slots: SlotService, ta_prefs: TaPrefsService, users: UsersService):
+    # ИСПРАВЛЕНИЕ: Проверяем какая кнопка была нажата
+    if cb.data == "sch:cancel":
+        await state.clear()
+        await cb.message.edit_text("❌ Создание расписания отменено.")
+        await cb.answer()
+        return
+    
+    # Если дошли сюда, значит была нажата кнопка "Создать"
     ta_id = users.get_ta_id_by_tg(cb.from_user.id)    # owner тоже ок (id=TA-00)
     if not ta_id:
         await state.clear()
@@ -229,13 +237,18 @@ async def schedule_confirm(cb: CallbackQuery,state: FSMContext,slots: SlotServic
         meeting_link=data.get("meeting_link",""),
     )
     await state.clear()
+    
     if not res.get("ok"):
         await cb.message.edit_text(f"Ошибка: {res.get('error')}")
     else:
         created = len(res.get("created", []))
         skipped = res.get("skipped", [])
-        text = f"Создано слотов: {created}."
+        
+        text = f"✅ Создано слотов: {created}."
         if skipped:
-            text += f"\nПропущено (конфликты): {len(skipped)} → {', '.join(skipped[:6])}{'…' if len(skipped)>6 else ''}"
+            text += f"\nПропущено: {len(skipped)} (конфликты или ошибки)"
+        text += f"\n\nИспользуйте /myslots для просмотра созданных слотов."
+        
         await cb.message.edit_text(text)
+    
     await cb.answer()

@@ -36,12 +36,13 @@ async def weeks_import(message: Message, weeks: WeeksService, owner_id: int):
             lines = ["📚 Импортированные недели:"]
             for _, row in weeks_list.head(5).iterrows():  # Показываем первые 5
                 status = row["status_emoji"]
-                lines.append(f"{status} {row['week']}. {row['title']} (до {row['deadline_date'].strftime('%d.%m')})")
+                deadline_str = row["deadline_date"].strftime('%d.%m.%Y')
+                lines.append(f"{status} <b>{row['week']}. {row['title']}</b> (до {deadline_str})")
             
             if len(weeks_list) > 5:
                 lines.append(f"... и еще {len(weeks_list) - 5} недель")
                 
-            await message.answer("\n".join(lines))
+            await message.answer("\n".join(lines), parse_mode="HTML")
             
     except Exception as e:
         await message.answer(f"❌ Ошибка импорта: {str(e)}")
@@ -58,12 +59,12 @@ async def weeks_list(message: Message, weeks: WeeksService, owner_id: int):
         await message.answer("📚 Недели не загружены. Используйте /weeks_import")
         return
     
-    lines = ["📚 Все недели курса:"]
+    lines = ["📚 <b>Все недели курса:</b>"]
     for _, row in weeks_df.iterrows():
         status = row["status_emoji"]
         deadline_str = row["deadline_date"].strftime('%d.%m.%Y')
-        lines.append(f"{status} **{row['week']}. {row['title']}**")
-        lines.append(f"   📅 Дедлайн: {deadline_str}")
+        lines.append(f"<b>{row['week']}. {row['title']}</b>")
+        lines.append(f"   📅 Дедлайн: {deadline_str} {status}")
         lines.append("")  # Пустая строка для разделения
     
     # Разбиваем на части если слишком длинное сообщение
@@ -73,15 +74,15 @@ async def weeks_list(message: Message, weeks: WeeksService, owner_id: int):
         current_message = lines[0] + "\n"  # Заголовок
         for line in lines[1:]:
             if len(current_message + line + "\n") > 4000:
-                await message.answer(current_message)
+                await message.answer(current_message, parse_mode="HTML")
                 current_message = line + "\n"
             else:
                 current_message += line + "\n"
         
         if current_message.strip():
-            await message.answer(current_message)
+            await message.answer(current_message, parse_mode="HTML")
     else:
-        await message.answer(full_text)
+        await message.answer(full_text, parse_mode="HTML")
 
 @router.message(F.text.startswith("/week_info"))
 async def week_info(message: Message, weeks: WeeksService, owner_id: int):
@@ -106,13 +107,13 @@ async def week_info(message: Message, weeks: WeeksService, owner_id: int):
         await message.answer(f"Неделя {week_number} не найдена")
         return
     
-    status_text = "🔴" if week_info["is_overdue"] else "🟢"
+    status_emoji = "🔴" if week_info["is_overdue"] else "🟢"
     
-    text = f"📋 **Неделя {week_number}: {week_info['title']}**\n\n" \
-           f"📝 **Описание:**\n{week_info['description']}\n\n" \
-           f"📅 **Дедлайн:** {week_info['deadline_str']} ({status_text})\n\n" \
-           f"🔧 **Технические детали:**\n" \
+    text = f"📋 <b>Неделя {week_info['week']}: {week_info['title']}</b>\n\n" \
+           f"📝 <b>Описание:</b>\n{week_info['description']}\n\n" \
+           f"📅 <b>Дедлайн:</b> {week_info['deadline_str']} {status_emoji}\n\n" \
+           f"🔧 <b>Технические детали:</b>\n" \
            f"• Статус: {'Просрочено' if week_info['is_overdue'] else 'Актуально'}\n" \
            f"• Дедлайн: {week_info['deadline_date']}"
     
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")

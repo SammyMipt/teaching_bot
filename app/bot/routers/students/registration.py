@@ -209,11 +209,11 @@ async def register_ok(cb: CallbackQuery, actor_tg_id: int, users: UsersService, 
     names = _pick_name(cand)
     student_code = _get_student_code(cand)
 
-    # Upsert student into users.csv
+    # ИСПРАВЛЕНО: параметр называется "id", а не "student_code"
     linked = users.register_student(
         tg_id=actor_tg_id,
         email=email,
-        student_code=student_code,
+        id=student_code,  # ← ИСПРАВЛЕНО: было student_code=student_code
         first_name=names["first_name"],
         last_name=names["last_name"],
         username=cb.from_user.username or ""

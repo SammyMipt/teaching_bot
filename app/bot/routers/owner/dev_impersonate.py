@@ -112,3 +112,85 @@ async def dev_user_del(message: Message, users: UsersService, owner_id: int):
         await message.answer(f"🗑️ Удалена запись с tg_id={tg_id} из users.csv")
     else:
         await message.answer("В users.csv пока пусто — удалять нечего.")
+
+@router.message(F.text.startswith("/set_student_id"))
+async def set_student_id(message: Message, users: UsersService, owner_id: int):
+    """Установить student_code (ID) для пользователя: /set_student_id [tg_id] [student_code]"""
+    if message.from_user.id != owner_id:
+        await message.answer("Только для владельца курса.")
+        return
+        
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Формат: /set_student_id [tg_id] [student_code]")
+        return
+        
+    try:
+        tg_id = int(parts[1])
+        student_code = parts[2]
+    except ValueError:
+        await message.answer("tg_id должен быть числом")
+        return
+    
+    user = users.get_by_tg(tg_id)
+    if not user:
+        await message.answer(f"Пользователь с tg_id {tg_id} не найден")
+        return
+    
+    # Обновляем student_code (поле id)
+    updated_user = users.upsert_basic(
+        tg_id=tg_id,
+        role=user.get('role'),
+        first_name=user.get('first_name', ''),
+        last_name=user.get('last_name', ''),
+        username=user.get('username', ''),
+        email=user.get('email', ''),
+        id=student_code
+    )
+    
+    await message.answer(
+        f"✅ Установлен student_code '<b>{student_code}</b>' для пользователя {tg_id}\n"
+        f"👤 {user.get('first_name', '')} {user.get('last_name', '')} ({user.get('role', 'unknown')})",
+        parse_mode="HTML"
+    )
+
+@router.message(F.text.startswith("/set_ta_id"))
+async def set_ta_id(message: Message, users: UsersService, owner_id: int):
+    """Установить TA ID для преподавателя: /set_ta_id [tg_id] [ta_code]"""
+    if message.from_user.id != owner_id:
+        await message.answer("Только для владельца курса.")
+        return
+        
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Формат: /set_ta_id [tg_id] [ta_code]")
+        return
+        
+    try:
+        tg_id = int(parts[1])
+        ta_code = parts[2]
+    except ValueError:
+        await message.answer("tg_id должен быть числом")
+        return
+    
+    user = users.get_by_tg(tg_id)
+    if not user:
+        await message.answer(f"Пользователь с tg_id {tg_id} не найден")
+        return
+    
+    # Обновляем TA код (поле id)
+    updated_user = users.upsert_basic(
+        tg_id=tg_id,
+        role=user.get('role'),
+        first_name=user.get('first_name', ''),
+        last_name=user.get('last_name', ''),
+        username=user.get('username', ''),
+        email=user.get('email', ''),
+        id=ta_code
+    )
+    
+    await message.answer(
+        f"✅ Установлен TA код '<b>{ta_code}</b>' для преподавателя {tg_id}\n"
+        f"👤 {user.get('first_name', '')} {user.get('last_name', '')} ({user.get('role', 'unknown')})",
+        parse_mode="HTML"
+    )
