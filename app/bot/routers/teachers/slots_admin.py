@@ -71,11 +71,9 @@ async def myslots(
     Красивое отображение слотов преподавателя:
     - разбивка по датам (заголовок дня)
     - внутри дня: по онлайн‑ссылкам (каждая ссылка — секция) и отдельный блок «Очно»
-    - скрываем прошедшие/завершившиеся и отменённые слоты
-    - без slot_id
-    - индикаторы занятости (🟢 свободно / 🟡 частично / 🔴 занято)
+    - новые статусы с правильными цветами
+    - скрываем отменённые слоты
     - список фамилий записавшихся
-    - NaN-safe для CSV
     """
     if not ensure_ta(role):
         await message.answer("Только для преподавателей.")
@@ -85,7 +83,9 @@ async def myslots(
     if not ta_id:
         await message.answer("В вашем профиле не задан TA-ID.")
         return
-    df = slots.list_for_teacher(ta_id)
+    
+    # Получаем обогащенные данные слотов
+    df = slots.get_enriched_slots_for_teacher(ta_id, bookings)
     if df.empty:
         await message.answer("Слотов пока нет.")
         return
@@ -94,19 +94,6 @@ async def myslots(
 
     def _is_nan(x) -> bool:
         return isinstance(x, float) and x != x  # NaN
-    
-    def _status_mark_and_tail(s: dict) -> tuple[str, str]:
-        """Возвращает (иконка, 'хвост') для статуса."""
-        status = (s.get("status") or "free").lower()
-        if status == "closed":
-            return "⚪", " • закрыт для записи"
-        # free -> считаем по заполненности
-        left = max(0, int(s["cap"]) - int(s["booked"]))
-        if left == s["cap"]:
-            return "🟢", ""
-        if left == 0:
-            return "🔴", ""
-        return "🟡", ""
 
     def nz_str(val: object, fallback: str = "") -> str:
         if isinstance(val, str) and val.strip():
@@ -130,121 +117,65 @@ async def myslots(
         username = u.get("username")
         return f"@{username}" if username else str(tg_id)
 
-    def parse_end_dt(d_str: str, to_str: str) -> datetime | None:
+    # Группируем по дням и типам
+    by_date = {}
+    for _, row in df.iterrows():
+        d = row.to_dict()
+        date = nz_str(d.get("date", ""))
+        mode = nz_str(d.get("mode", "online"))
+        link = nz_str(d.get("meeting_link", ""))
+        location = nz_str(d.get("location", DEFAULT_LOCATION), DEFAULT_LOCATION)
+
+        # Получаем список записанных студентов
+        names = []
         try:
-            y, m, d = map(int, d_str.split("-"))
-            hh, mm = map(int, to_str.split(":"))
-            return datetime(y, m, d, hh, mm)
-        except Exception:
-            return None
-
-    now = datetime.now()
-
-    # Отсортируем и заранее отфильтруем отменённые/прошедшие
-    try:
-        df = df.sort_values(by=["date", "time_from", "time_to"])
-    except Exception:
-        pass
-
-    filtered_rows: list[dict] = []
-    for _, r in df.iterrows():
-        status = nz_str(r.get("status", "active"), "active").lower()
-        if status == "canceled":
-            continue
-
-        date_str = nz_str(r.get("date", ""))
-        t_from = nz_str(r.get("time_from", ""))
-        t_to = nz_str(r.get("time_to", ""))
-
-        # если нет корректной даты/времени — пропускаем
-        if not date_str or not t_to:
-            continue
-
-        end_dt = parse_end_dt(date_str, t_to)
-        if end_dt and end_dt <= now:
-            # уже прошло или закончилось
-            continue
-
-        # нормализуем поля для дальнейшей логики
-        cap = nz_int(r.get("capacity", 1), 1)
-        mode = nz_str(r.get("mode", "online"), "online")
-        link = nz_str(r.get("meeting_link", ""), "")
-        location = nz_str(r.get("location", DEFAULT_LOCATION), DEFAULT_LOCATION)
-
-        # подтянем брони
-        try:
-            bdf = bookings.list_for_slot(r["slot_id"])
-        except AttributeError:
-            bdf = bookings.table.find(slot_id=r["slot_id"])
-
-        names: list[str] = []
-        if bdf is not None and not bdf.empty:
-            # учитывать только активные брони (если есть колонка status)
-            cols = {c.lower(): c for c in bdf.columns}
-            col_status = cols.get("status")
-            if col_status:
-                bdf = bdf[bdf[col_status].astype(str).str.lower() != "canceled"]
-
-            # взять колонку с tg студента (поддержим разные названия)
-            col_tg = cols.get("student_tg_id") or cols.get("tg_id") or cols.get("student_id")
-            if col_tg:
-                for tg in bdf[col_tg].astype(str).tolist():
+            bdf = bookings.list_for_slot(d["slot_id"])
+            if not bdf.empty and "student_tg_id" in bdf.columns:
+                active_bookings = bdf
+                if "status" in bdf.columns:
+                    active_bookings = bdf[bdf["status"].str.lower().isin(["active", "confirmed"])]
+                for tg in active_bookings["student_tg_id"].dropna().tolist():
                     try:
                         names.append(short_name_by_tg(int(tg)))
                     except Exception:
                         continue
+        except Exception:
+            pass
 
-        filtered_rows.append(
-            dict(
-                date=date_str,
-                from_=t_from,
-                to=t_to,
-                cap=cap,
-                booked=len(names),
-                names=names,
-                mode=mode,
-                link=link,
-                location=location,
-                status=status,  # <= ВАЖНО
-            )
-        )
+        slot_info = {
+            "from_": nz_str(d.get("time_from", "")),
+            "to": nz_str(d.get("time_to", "")),
+            "cap": nz_int(d.get("capacity", 1), 1),
+            "booked": nz_int(d.get("booked_count", 0), 0),
+            "location": location,
+            "link": link,
+            "names": names,
+            "computed_status": d.get("computed_status", "free_full"),
+            "display_color": d.get("display_color", "🟢"),
+            "status_description": d.get("status_description", "")
+        }
 
-    if not filtered_rows:
-        await message.answer("Ближайших слотов нет.")
+        if date not in by_date:
+            by_date[date] = {"online": {}, "offline": []}
+
+        if mode == "online":
+            link_key = link if link else "___no_link___"
+            if link_key not in by_date[date]["online"]:
+                by_date[date]["online"][link_key] = []
+            by_date[date]["online"][link_key].append(slot_info)
+        else:
+            by_date[date]["offline"].append(slot_info)
+
+    # Сортируем дни
+    sorted_days = sorted([d for d in by_date.keys() if d])
+    if not sorted_days:
+        await message.answer("Нет доступных слотов.")
         return
 
-    # Группировка: date -> { online: {link: [slots]}, offline: [slots] }
-    by_date: dict[str, dict] = {}
-    for s in filtered_rows:
-        day = s["date"]
-        if day not in by_date:
-            by_date[day] = {"online": {}, "offline": []}
+    out = ["📅 Ваши слоты:"]
 
-        if s["mode"] == "online":
-            key = s["link"] or "___no_link___"
-            by_date[day]["online"].setdefault(key, []).append(s)
-        else:
-            by_date[day]["offline"].append(s)
-
-    # Красиво отсортируем даты по возрастанию
-    def _date_key(d: str):
-        try:
-            y, m, dd = map(int, d.split("-"))
-            return (y, m, dd)
-        except Exception:
-            return (9999, 12, 31)
-
-    sorted_days = sorted(by_date.keys(), key=_date_key)
-
-    # Пытаемся поставить русскую локаль для названия дня недели (не обязательно)
-    try:
-        locale.setlocale(locale.LC_TIME, "ru_RU.UTF-8")
-    except Exception:
-        pass
-
-    out: list[str] = []
     for day in sorted_days:
-        # Заголовок дня, напр. "📅 20.08.2025 (ср)"
+        # Заголовок дня с человеческой датой
         try:
             y, m, d = map(int, day.split("-"))
             dt = datetime(y, m, d)
@@ -265,11 +196,12 @@ async def myslots(
                 out.append(header)
                 for s in online_groups[key]:
                     left = s["cap"] - s["booked"]
-                    mark, tail = _status_mark_and_tail(s)
+                    color = s["display_color"]
+                    status_desc = s["status_description"]
                     names_line = f"\n  Записаны: {', '.join(s['names'])}" if s["names"] else ""
                     out.append(
-                        f"{mark} {s['from_']}-{s['to']} • Онлайн\n"
-                        f"  мест: {s['cap']}, занято: {s['booked']}, свободно: {left}{tail}{names_line}"
+                        f"{color} {s['from_']}-{s['to']} • Онлайн\n"
+                        f"  мест: {s['cap']}, занято: {s['booked']}, свободно: {left}{status_desc}{names_line}"
                     )
 
         # OFFLINE блок
@@ -278,13 +210,14 @@ async def myslots(
             out.append("🏫 Очно")
             for s in offline_list:
                 left = s["cap"] - s["booked"]
-                mark, tail = _status_mark_and_tail(s)
-                show_loc = s["location"] if (s["location"] and s["location"] != "Аудитория по расписанию") else ""
+                color = s["display_color"]
+                status_desc = s["status_description"]
+                show_loc = s["location"] if (s["location"] and s["location"] != DEFAULT_LOCATION) else ""
                 loc_part = f" • {show_loc}" if show_loc else ""
                 names_line = f"\n  Записаны: {', '.join(s['names'])}" if s["names"] else ""
                 out.append(
-                    f"{mark} {s['from_']}-{s['to']} • Очно{loc_part}\n"
-                    f"  мест: {s['cap']}, занято: {s['booked']}, свободно: {left}{tail}{names_line}"
+                    f"{color} {s['from_']}-{s['to']} • Очно{loc_part}\n"
+                    f"  мест: {s['cap']}, занято: {s['booked']}, свободно: {left}{status_desc}{names_line}"
                 )
 
     await message.answer("\n".join(out))

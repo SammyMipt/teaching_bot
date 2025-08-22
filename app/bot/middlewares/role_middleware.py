@@ -17,18 +17,24 @@ class RoleMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
-        tg_id = None
-        if hasattr(event, "from_user") and event.from_user:
-            tg_id = event.from_user.id
-        elif hasattr(event, "message") and event.message and event.message.from_user:
-            tg_id = event.message.from_user.id
+        # Получаем actor_tg_id из ActorMiddleware (если есть)
+        actor_tg_id = data.get("actor_tg_id")
+        
+        # Fallback к real tg_id если нет actor_tg_id
+        if actor_tg_id is None:
+            tg_id = None
+            if hasattr(event, "from_user") and event.from_user:
+                tg_id = event.from_user.id
+            elif hasattr(event, "message") and event.message and event.message.from_user:
+                tg_id = event.message.from_user.id
+            actor_tg_id = tg_id
 
         role = "unknown"
-        if tg_id:
-            if tg_id == self.owner_id:
+        if actor_tg_id:
+            if actor_tg_id == self.owner_id:
                 role = "owner"
             else:
-                role = self.users.get_role(tg_id)
+                role = self.users.get_role(actor_tg_id)
 
         data["role"] = role
         return await handler(event, data)

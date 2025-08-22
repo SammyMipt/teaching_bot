@@ -78,19 +78,26 @@ async def book_cmd(message: Message, slots: SlotService, bookings: BookingServic
     if df.empty:
         await message.answer("Слот не найден.")
         return
-    slot = df.iloc[0].to_dict()
-    if slot.get("status") == "canceled":
-        await message.answer("Слот отменён.")
-        return
-    cap = int(slot.get("capacity", 1))
-    booked = bookings.count_for_slot(slot_id)
-    if booked >= cap:
-        await message.answer("Свободных мест больше нет.")
-        return
-    if bookings.has_booking(slot_id, message.from_user.id):
-        await message.answer("У вас уже есть бронь на этот слот.")
+
+    # Простая проверка (расширить при необходимости)
+    capacity = int(df.iloc[0].get("capacity", 1))
+    try:
+        bdf = bookings.list_for_slot(slot_id)
+        current_bookings = len(bdf)
+    except AttributeError:
+        bdf = bookings.table.find(slot_id=slot_id)
+        current_bookings = len(bdf)
+
+    if current_bookings >= capacity:
+        await message.answer("В слоте больше нет свободных мест.")
         return
 
-    b = bookings.create(slot_id, message.from_user.id)
-    left = cap - (booked + 1)
-    await message.answer(f"Записал! booking_id={b['booking_id']}. Осталось мест: {left}")
+    # Добавляем запись (упрощенно)
+    booking_row = {
+        "slot_id": slot_id,
+        "student_tg_id": message.from_user.id,
+        "status": "active",
+        "created_at": "2025-08-21T00:00:00Z"  # заглушка
+    }
+    bookings.table.append_row(booking_row)
+    await message.answer(f"✅ Вы записались на слот {slot_id}!")
