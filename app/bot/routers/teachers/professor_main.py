@@ -1,6 +1,8 @@
 """
-Главный роутер для преподавателей с новым UX согласно спецификации.
-Реализует главное меню и интеграцию с существующими функциями.
+Главный роутер для преподавателей с исправленным UX согласно спецификации.
+Исправления:
+1. Единое управление расписанием вместо отдельных кнопок
+2. Исправлена кнопка "Студенты" в карточке слота
 """
 
 from __future__ import annotations
@@ -53,38 +55,34 @@ def parse_callback(callback_data: str) -> dict:
                 key, value = part.split("=", 1)
                 result[key] = value
     except Exception as e:
-        log.error(f"Error parsing callback: {callback_data}, error: {e}")
+        log.error(f"Error parsing callback data: {callback_data}, error: {e}")
     return result
 
-# ================================================================================================
-# СТАТУСЫ СЛОТОВ
-# ================================================================================================
-
 def get_slot_display_status(slot_dict: dict, current_bookings: int) -> dict:
-    """Получить статус слота для отображения"""
-    now = datetime.now(timezone.utc)
-    
-    try:
-        slot_date = datetime.fromisoformat(slot_dict.get("date", "")).date()
-        time_to = slot_dict.get("time_to", "23:59")
-        slot_datetime = datetime.combine(slot_date, datetime.strptime(time_to, "%H:%M").time())
-        slot_datetime = slot_datetime.replace(tzinfo=timezone.utc)
-    except Exception:
-        slot_datetime = now
-    
-    slot_status = slot_dict.get("status", "free").lower()
+    """Определение статуса слота для отображения"""
     capacity = int(slot_dict.get("capacity", 1))
+    is_open = slot_dict.get("is_open", True)
     
-    if slot_datetime < now:
-        return {"emoji": "⚫", "text": "Прошёл", "status": "past"}
-    elif slot_status in ["canceled", "closed"]:
-        return {"emoji": "⚪", "text": "Закрыт", "status": "closed"}
+    # Проверяем, прошёл ли слот
+    try:
+        slot_date = slot_dict.get("date")
+        slot_time = slot_dict.get("time_to", slot_dict.get("time_from"))
+        if slot_date and slot_time:
+            slot_dt = datetime.fromisoformat(f"{slot_date}T{slot_time}:00+03:00")
+            now = datetime.now(timezone(timedelta(hours=3)))
+            if slot_dt < now:
+                return {"emoji": "⚫", "status": "pasted", "text": "Прошёл"}
+    except:
+        pass
+    
+    if not is_open:
+        return {"emoji": "⚪", "status": "closed", "text": "Закрыт"}
     elif current_bookings >= capacity:
-        return {"emoji": "🔴", "text": "Занят", "status": "busy"}
+        return {"emoji": "🔴", "status": "full", "text": "Занят"}
     elif current_bookings > 0:
-        return {"emoji": "🟡", "text": "Частично свободен", "status": "partial"}
+        return {"emoji": "🟡", "status": "partial", "text": "Частично свободен"}
     else:
-        return {"emoji": "🟢", "text": "Свободен", "status": "free"}
+        return {"emoji": "🟢", "status": "free", "text": "Свободен"}
 
 # ================================================================================================
 # ГЛАВНОЕ МЕНЮ
@@ -106,7 +104,9 @@ async def professor_main_menu(
         return
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="📅 Моё расписание", callback_data="r=t;a=schedule_main")
+    # ИСПРАВЛЕНИЕ 1: Единое управление расписанием согласно спецификации
+    kb.button(text="➕ Создать расписание", callback_data="r=t;a=sched_create_start")
+    kb.button(text="📅 Управление расписанием", callback_data="r=t;a=sched_manage_main")
     kb.button(text="📚 Методические материалы", callback_data="r=t;a=materials_main")
     kb.button(text="👨‍🎓 Сдачи студентов", callback_data="r=t;a=submissions_main")
     kb.adjust(1)
@@ -129,7 +129,8 @@ async def back_to_main_handler(cb: CallbackQuery, actor_tg_id: int, users: Users
         return
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="📅 Моё расписание", callback_data="r=t;a=schedule_main")
+    kb.button(text="➕ Создать расписание", callback_data="r=t;a=sched_create_start")
+    kb.button(text="📅 Управление расписанием", callback_data="r=t;a=sched_manage_main")
     kb.button(text="📚 Методические материалы", callback_data="r=t;a=materials_main")
     kb.button(text="👨‍🎓 Сдачи студентов", callback_data="r=t;a=submissions_main")
     kb.adjust(1)
@@ -142,44 +143,44 @@ async def back_to_main_handler(cb: CallbackQuery, actor_tg_id: int, users: Users
     await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 # ================================================================================================
-# 📅 РАСПИСАНИЕ
+# ➕ СОЗДАНИЕ РАСПИСАНИЯ
 # ================================================================================================
 
-@router.callback_query(F.data == "r=t;a=schedule_main")
-async def schedule_main_handler(cb: CallbackQuery):
-    """Главное меню расписания"""
+@router.callback_query(F.data == "r=t;a=sched_create_start")
+async def sched_create_start_handler(cb: CallbackQuery, state: FSMContext):
+    """Создание расписания - начало мастера"""
     await cb.answer()
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать расписание", callback_data="r=t;a=sched_create_start")
-    kb.button(text="👀 Просмотреть расписание", callback_data="r=t;a=sched_view_dates")
-    kb.button(text="✏️ Изменить расписание", callback_data="r=t;a=sched_edit_date")
+    kb.button(text="📅 Выбрать даты", callback_data="r=t;a=sched_pick_dates")
     kb.button(text="⬅️ Назад", callback_data="r=t;a=back_to_main")
     kb.adjust(1)
     
-    text = "📅 <b>Моё расписание</b>\n\nВыберите действие:"
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-@router.callback_query(F.data == "r=t;a=sched_create_start")
-async def sched_create_start_handler(cb: CallbackQuery):
-    """Создание расписания - заглушка"""
-    await cb.answer()
-    
-    text = "➕ <b>Создание расписания</b>\n\n🚧 Интеграция с существующим мастером в разработке\n\nПока используйте команду /schedule для создания слотов."
-    
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
+    text = (
+        "➕ <b>Создание расписания</b>\n\n"
+        "Мастер создания слотов поможет вам быстро создать расписание.\n\n"
+        "Вы сможете указать:\n"
+        "• Дату или диапазон дат\n"
+        "• Время начала и конца приёма\n"
+        "• Длительность одного слота\n"
+        "• Количество студентов на слот\n\n"
+        "Нажмите «Выбрать даты» для начала"
+    )
     
     await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
-@router.callback_query(F.data == "r=t;a=sched_view_dates")
-async def sched_view_dates_handler(
+# ================================================================================================
+# 📅 УПРАВЛЕНИЕ РАСПИСАНИЕМ
+# ================================================================================================
+
+@router.callback_query(F.data == "r=t;a=sched_manage_main")
+async def sched_manage_main_handler(
     cb: CallbackQuery,
     actor_tg_id: int,
     users: UsersService,
     slots: SlotService
 ):
-    """Просмотр расписания - выбор даты"""
+    """Управление расписанием - выбор даты"""
     await cb.answer()
     
     ta_id = users.get_ta_id_by_tg(actor_tg_id)
@@ -190,43 +191,34 @@ async def sched_view_dates_handler(
     try:
         slots_df = slots.table.read()
         if slots_df.empty:
+            text = "📅 <b>Управление расписанием</b>\n\n❌ У вас пока нет созданных слотов.\nИспользуйте «Создать расписание» для добавления."
             kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "📅 <b>Просмотр расписания</b>\n\nУ вас пока нет созданных слотов.\n\nСоздайте расписание: ➕ Создать расписание",
-                reply_markup=kb.as_markup()
-            )
+            kb.button(text="➕ Создать расписание", callback_data="r=t;a=sched_create_start")
+            kb.button(text="⬅️ Назад", callback_data="r=t;a=back_to_main")
+            kb.adjust(1)
+            await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
             return
         
-        ta_slots = slots_df[slots_df["ta_id"] == ta_id]
-        if ta_slots.empty:
+        teacher_slots = slots_df[slots_df["ta_id"] == ta_id]
+        if teacher_slots.empty:
+            text = "📅 <b>Управление расписанием</b>\n\n❌ У вас пока нет созданных слотов.\nИспользуйте «Создать расписание» для добавления."
             kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "📅 <b>Просмотр расписания</b>\n\nУ вас пока нет созданных слотов.\n\nСоздайте расписание: ➕ Создать расписание",
-                reply_markup=kb.as_markup()
-            )
+            kb.button(text="➕ Создать расписание", callback_data="r=t;a=sched_create_start")
+            kb.button(text="⬅️ Назад", callback_data="r=t;a=back_to_main")
+            kb.adjust(1)
+            await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
             return
         
-        unique_dates = ta_slots["date"].unique()
-        unique_dates = sorted([d for d in unique_dates if d])
-        
-        if not unique_dates:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "📅 Нет доступных дат в расписании",
-                reply_markup=kb.as_markup()
-            )
-            return
+        # Группируем по датам
+        unique_dates = teacher_slots["date"].unique()
+        unique_dates = sorted(unique_dates)
         
         kb = InlineKeyboardBuilder()
-        
-        for date_str in unique_dates[:10]:
+        for date_str in unique_dates[:10]:  # Показываем первые 10 дат
             try:
                 date_obj = datetime.fromisoformat(date_str).date()
                 formatted_date = date_obj.strftime("%d.%m.%Y")
-                date_slots = ta_slots[ta_slots["date"] == date_str]
+                date_slots = teacher_slots[teacher_slots["date"] == date_str]
                 slots_count = len(date_slots)
                 
                 kb.button(
@@ -236,15 +228,19 @@ async def sched_view_dates_handler(
             except Exception as e:
                 log.error(f"Error processing date {date_str}: {e}")
         
-        kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
+        kb.button(text="⬅️ Назад", callback_data="r=t;a=back_to_main")
         kb.adjust(1)
         
-        text = "📅 <b>Просмотр расписания</b>\n\nВыберите дату для просмотра слотов:"
+        text = "📅 <b>Управление расписанием</b>\n\nВыберите дату для просмотра и управления слотами:"
         await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
         
     except Exception as e:
-        log.error(f"Error in sched_view_dates: {e}")
+        log.error(f"Error in sched_manage_main: {e}")
         await cb.message.edit_text(f"❌ Ошибка при загрузке расписания: {str(e)}")
+
+# ================================================================================================
+# СПИСОК СЛОТОВ И КАРТОЧКА СЛОТА
+# ================================================================================================
 
 @router.callback_query(F.data.regexp(r"r=t;a=slot_list;d=\d{8}"))
 async def slot_list_handler(
@@ -259,12 +255,8 @@ async def slot_list_handler(
     
     # Парсим дату
     try:
-        parts = cb.data.split(";")
-        date_str = None
-        for part in parts:
-            if part.startswith("d="):
-                date_str = part[2:]
-                break
+        data = parse_callback(cb.data)
+        date_str = data.get("d", "")
         
         if not date_str:
             await cb.message.edit_text("❌ Некорректные данные")
@@ -332,10 +324,10 @@ async def slot_list_handler(
             
             kb.button(
                 text=button_text,
-                callback_data=f"r=t;a=slot_actions;s={slot_id}"
+                callback_data=f"r=t;a=slot_card;s={slot_id}"
             )
         
-        kb.button(text="⬅️ Назад", callback_data="r=t;a=sched_view_dates")
+        kb.button(text="⬅️ Назад", callback_data="r=t;a=sched_manage_main")
         kb.adjust(1)
         
         text = f"📅 <b>Слоты на {formatted_date}</b>\n\nВыберите слот для просмотра деталей:"
@@ -345,8 +337,8 @@ async def slot_list_handler(
         log.error(f"Error in slot_list: {e}")
         await cb.message.edit_text(f"❌ Ошибка: {str(e)}")
 
-@router.callback_query(F.data.startswith("r=t;a=slot_actions;s="))
-async def slot_actions_handler(
+@router.callback_query(F.data.startswith("r=t;a=slot_card;s="))
+async def slot_card_handler(
     cb: CallbackQuery,
     slots: SlotService,
     bookings: BookingService
@@ -354,29 +346,21 @@ async def slot_actions_handler(
     """Карточка слота с действиями"""
     await cb.answer()
     
-    # Извлекаем slot_id
     try:
-        parts = cb.data.split(";")
-        slot_id = None
-        for part in parts:
-            if part.startswith("s="):
-                slot_id = part[2:]
-                break
+        data = parse_callback(cb.data)
+        slot_id = data.get("s", "")
         
         if not slot_id:
-            await cb.message.edit_text("❌ Не удалось определить ID слота")
+            await cb.message.edit_text("❌ Некорректные данные")
             return
-    except Exception:
-        await cb.message.edit_text("❌ Ошибка обработки данных")
-        return
-    
-    try:
+        
         found, slot_dict = slots.get_slot_by_id(slot_id)
         if not found:
             await cb.message.edit_text("❌ Слот не найден")
             return
         
-        # Получаем записи на слот
+        # Считаем записи
+        current_bookings = 0
         try:
             bookings_df = bookings.table.read()
             if not bookings_df.empty:
@@ -385,33 +369,26 @@ async def slot_actions_handler(
                     slot_bookings["status"].str.lower().isin(["active", "confirmed"])
                 ] if "status" in slot_bookings.columns else slot_bookings
                 current_bookings = len(active_bookings)
-            else:
-                current_bookings = 0
         except Exception:
-            current_bookings = 0
+            pass
         
-        status_info = get_slot_display_status(slot_dict, current_bookings)
-        
-        # Форматируем информацию
+        # Формируем информацию о слоте
         date = slot_dict.get("date", "")
         time_from = slot_dict.get("time_from", "")
         time_to = slot_dict.get("time_to", "")
         capacity = int(slot_dict.get("capacity", 1))
-        mode = slot_dict.get("mode", "online")
-        location = slot_dict.get("location", "")
-        meeting_link = slot_dict.get("meeting_link", "")
+        location = slot_dict.get("location", "онлайн")
         
-        if mode == "online" and meeting_link:
-            place_info = f"💻 Онлайн: {meeting_link}"
-        elif mode == "offline" and location:
-            place_info = f"🏫 Очно: {location}"
-        else:
-            place_info = f"📍 {mode.title()}"
+        status_info = get_slot_display_status(slot_dict, current_bookings)
         
-        text = f"⏰ <b>{time_from}–{time_to} | {date}</b>\n" \
-               f"👥 {current_bookings}/{capacity} | Статус: {status_info['emoji']} {status_info['text']}\n" \
-               f"📍 {place_info}\n\n"
+        text = (
+            f"<b>Карточка слота</b>\n\n"
+            f"⏰ {time_from}–{time_to} | {date}\n"
+            f"👥 {current_bookings}/{capacity} | Статус: {status_info['emoji']} {status_info['text']}\n"
+            f"📍 {location}\n"
+        )
         
+        # Кнопки действий
         kb = InlineKeyboardBuilder()
         kb.button(text="👨‍🎓 Студенты", callback_data=f"r=t;a=slot_students;s={slot_id}")
         kb.button(text="✏️ Изменить", callback_data=f"r=t;a=slot_edit;s={slot_id}")
@@ -429,8 +406,12 @@ async def slot_actions_handler(
         await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
         
     except Exception as e:
-        log.error(f"Error in slot_actions: {e}")
+        log.error(f"Error in slot_card: {e}")
         await cb.message.edit_text(f"❌ Ошибка: {str(e)}")
+
+# ================================================================================================
+# ИСПРАВЛЕНИЕ 2: Кнопка "Студенты" - полноценное отображение списка
+# ================================================================================================
 
 @router.callback_query(F.data.startswith("r=t;a=slot_students;s="))
 async def slot_students_handler(
@@ -438,241 +419,83 @@ async def slot_students_handler(
     bookings: BookingService,
     users: UsersService
 ):
-    """Список записанных студентов (ОТЛАДКА)"""
+    """Список записанных студентов - ИСПРАВЛЕНО"""
     await cb.answer()
     
-    # Извлекаем slot_id - добавляем отладку
+    # Извлекаем slot_id
     try:
-        parts = cb.data.split(";")
-        slot_id = None
-        for part in parts:
-            if part.startswith("s="):
-                slot_id = part[2:]  # Убираем "s="
-                break
+        data = parse_callback(cb.data)
+        slot_id = data.get("s", "")
         
         log.info(f"slot_students_handler: callback_data={cb.data}, slot_id={slot_id}")
         
         if not slot_id:
             log.error(f"slot_students_handler: slot_id not found in callback_data={cb.data}")
-            await cb.answer("❌ Не удалось определить ID слота", show_alert=True)
+            await cb.message.edit_text("❌ Не удалось определить ID слота")
             return
             
     except Exception as e:
         log.error(f"Error parsing slot_students callback: {cb.data}, error: {e}")
-        await cb.answer("❌ Ошибка обработки данных", show_alert=True)
+        await cb.message.edit_text("❌ Ошибка обработки данных")
         return
     
     try:
         bookings_df = bookings.table.read()
-        log.info(f"slot_students_handler: bookings_df shape={bookings_df.shape if not bookings_df.empty else 'empty'}")
         
         if bookings_df.empty:
-            await cb.answer("Никто не записан на этот слот.", show_alert=True)
-            return
-        
-        slot_bookings = bookings_df[bookings_df["slot_id"] == slot_id]
-        log.info(f"slot_students_handler: slot_bookings for {slot_id}: {len(slot_bookings)} rows")
-        
-        active_bookings = slot_bookings[
-            slot_bookings["status"].str.lower().isin(["active", "confirmed"])
-        ] if "status" in slot_bookings.columns else slot_bookings
-        
-        log.info(f"slot_students_handler: active_bookings for {slot_id}: {len(active_bookings)} rows")
-        
-        if active_bookings.empty:
-            await cb.answer("Никто не записан на этот слот.", show_alert=True)
-            return
-        
-        lines = ["👨‍🎓 Записанные студенты:\n"]
-        
-        for i, (_, booking_row) in enumerate(active_bookings.iterrows()):
-            tg_id = booking_row.get("student_tg_id")
-            if tg_id:
-                try:
-                    student_user = users.get_by_tg(int(tg_id))
-                    if student_user:
-                        student_name = f"{student_user.get('first_name', '')} {student_user.get('last_name', '')}".strip()
-                        if not student_name:
-                            student_name = f"ID: {student_user.get('id', tg_id)}"
-                    else:
-                        student_name = f"TG: {tg_id}"
-                    
-                    created_at = booking_row.get("created_at", "")
-                    if created_at:
-                        try:
-                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            date_str = dt.strftime("%d.%m %H:%M")
-                            lines.append(f"{i+1}. {student_name} (записался {date_str})")
-                        except:
-                            lines.append(f"{i+1}. {student_name}")
-                    else:
-                        lines.append(f"{i+1}. {student_name}")
-                except Exception:
-                    lines.append(f"{i+1}. ID: {tg_id}")
-        
-        students_text = "\n".join(lines)
-        log.info(f"slot_students_handler: prepared text length={len(students_text)}")
-        
-        # ПРОБУЕМ РАЗНЫЕ СПОСОБЫ ОТОБРАЖЕНИЯ
-        if len(lines) <= 2:  # Если только заголовок + один студент
-            await cb.answer(students_text, show_alert=True)
+            text = "👨‍🎓 <b>Записанные студенты</b>\n\n📭 На этот слот никто не записан."
         else:
-            # Если много студентов, показываем в сообщении
-            kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data=f"r=t;a=slot_actions;s={slot_id}")
-            await cb.message.edit_text(students_text, reply_markup=kb.as_markup())
+            slot_bookings = bookings_df[bookings_df["slot_id"] == slot_id]
+            
+            active_bookings = slot_bookings[
+                slot_bookings["status"].str.lower().isin(["active", "confirmed"])
+            ] if "status" in slot_bookings.columns else slot_bookings
+            
+            if active_bookings.empty:
+                text = "👨‍🎓 <b>Записанные студенты</b>\n\n📭 На этот слот никто не записан."
+            else:
+                lines = ["👨‍🎓 <b>Записанные студенты:</b>\n"]
+                
+                for i, (_, booking_row) in enumerate(active_bookings.iterrows(), 1):
+                    tg_id = booking_row.get("student_tg_id")
+                    if tg_id:
+                        try:
+                            student_user = users.get_by_tg(int(tg_id))
+                            if student_user:
+                                first_name = student_user.get('first_name', '')
+                                last_name = student_user.get('last_name', '')
+                                student_name = f"{first_name} {last_name}".strip()
+                                if not student_name:
+                                    student_name = f"ID: {student_user.get('id', tg_id)}"
+                            else:
+                                student_name = f"TG: {tg_id}"
+                            
+                            # Добавляем информацию о времени записи
+                            created_at = booking_row.get("created_at", "")
+                            if created_at:
+                                try:
+                                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                    date_str = dt.strftime("%d.%m %H:%M")
+                                    lines.append(f"{i}. <b>{student_name}</b>\n   📝 Записался: {date_str}")
+                                except:
+                                    lines.append(f"{i}. <b>{student_name}</b>")
+                            else:
+                                lines.append(f"{i}. <b>{student_name}</b>")
+                        except Exception as e:
+                            log.error(f"Error processing student {tg_id}: {e}")
+                            lines.append(f"{i}. ID: {tg_id}")
+                
+                text = "\n".join(lines)
         
-    except Exception as e:
-        log.error(f"Error listing students for slot {slot_id}: {e}", exc_info=True)
-        await cb.answer("Ошибка при получении списка студентов.", show_alert=True)
-
-# Действия со слотами - заглушки
-@router.callback_query(F.data.startswith("r=t;a=slot_edit;s="))
-@router.callback_query(F.data.startswith("r=t;a=slot_open;s="))
-@router.callback_query(F.data.startswith("r=t;a=slot_close;s="))
-@router.callback_query(F.data.startswith("r=t;a=slot_delete;s="))
-async def slot_action_handler(cb: CallbackQuery):
-    """Действия со слотом - заглушки"""
-    await cb.answer()
-    
-    try:
-        parts = cb.data.split(";")
-        action = None
-        slot_id = None
-        for part in parts:
-            if part.startswith("a="):
-                action = part[2:]
-            elif part.startswith("s="):
-                slot_id = part[2:]
-        
-        if not action or not slot_id:
-            await cb.message.edit_text("❌ Ошибка обработки данных")
-            return
-    except Exception:
-        await cb.message.edit_text("❌ Ошибка обработки данных")
-        return
-    
-    action_name = {
-        "slot_open": "открытие",
-        "slot_close": "закрытие", 
-        "slot_delete": "удаление",
-        "slot_edit": "редактирование"
-    }.get(action, action)
-    
-    text = f"⚙️ <b>Действие: {action_name}</b>\n\n🚧 Интеграция с существующей логикой в разработке\n\nПока используйте /myslots_manage"
-    
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data=f"r=t;a=slot_actions;s={slot_id}")
-    
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-# Изменение расписания - ИСПРАВЛЯЕМ создание callback_data
-@router.callback_query(F.data == "r=t;a=sched_edit_date")
-async def sched_edit_date_handler(
-    cb: CallbackQuery,
-    actor_tg_id: int,
-    users: UsersService,
-    slots: SlotService
-):
-    """Изменение расписания - выбор даты (ИСПРАВЛЕНО)"""
-    await cb.answer()
-    
-    ta_id = users.get_ta_id_by_tg(actor_tg_id)
-    if not ta_id:
-        await cb.message.edit_text("❌ Не удалось определить ваш TA ID")
-        return
-    
-    try:
-        slots_df = slots.table.read()
-        if slots_df.empty:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "✏️ <b>Изменение расписания</b>\n\nУ вас пока нет слотов для изменения.",
-                reply_markup=kb.as_markup()
-            )
-            return
-        
-        ta_slots = slots_df[slots_df["ta_id"] == ta_id]
-        if ta_slots.empty:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "✏️ <b>Изменение расписания</b>\n\nУ вас пока нет слотов для изменения.",
-                reply_markup=kb.as_markup()
-            )
-            return
-        
-        # Только будущие слоты
-        now = datetime.now().date()
-        future_slots = ta_slots[ta_slots["date"] >= now.isoformat()]
-        
-        if future_slots.empty:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-            await cb.message.edit_text(
-                "✏️ <b>Изменение расписания</b>\n\nНет слотов для изменения (только прошедшие).",
-                reply_markup=kb.as_markup()
-            )
-            return
-        
-        unique_dates = future_slots["date"].unique()
-        unique_dates = sorted([d for d in unique_dates if d])
-        
+        # Кнопка назад
         kb = InlineKeyboardBuilder()
-        
-        for date_str in unique_dates[:10]:
-            try:
-                date_obj = datetime.fromisoformat(date_str).date()
-                formatted_date = date_obj.strftime("%d.%m.%Y")
-                
-                date_slots = future_slots[future_slots["date"] == date_str]
-                slots_count = len(date_slots)
-                
-                # ИСПРАВЛЯЕМ callback_data - используем slot_list вместо sched_edit_slot_list
-                # так как мы все равно перенаправляем на slot_list
-                callback_data = f"r=t;a=slot_list;d={date_str.replace('-', '')}"
-                
-                kb.button(
-                    text=f"✏️ {formatted_date} ({slots_count} слотов)",
-                    callback_data=callback_data
-                )
-                
-                # Логируем для отладки
-                log.debug(f"Created edit button with callback: {callback_data}")
-                
-            except Exception as e:
-                log.error(f"Error processing edit date {date_str}: {e}")
-        
-        kb.button(text="⬅️ Назад", callback_data="r=t;a=schedule_main")
-        kb.adjust(1)
-        
-        text = "✏️ <b>Изменение расписания</b>\n\nВыберите дату для изменения слотов:"
+        kb.button(text="⬅️ Назад к слоту", callback_data=f"r=t;a=slot_card;s={slot_id}")
         
         await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
         
     except Exception as e:
-        log.error(f"Error in sched_edit_date: {e}")
-        await cb.message.edit_text(f"❌ Ошибка: {str(e)}")
-
-# Исправляем обработчик изменения расписания - добавляем недостающий обработчик для дат
-@router.callback_query(F.data.regexp(r"r=t;a=sched_edit_slot_list;d=\d{8}"))
-async def sched_edit_slot_list_handler(
-    cb: CallbackQuery,
-    actor_tg_id: int,
-    users: UsersService,
-    slots: SlotService,
-    bookings: BookingService
-):
-    """Список слотов для изменения (ИСПРАВЛЕНО - добавили обработчик)"""
-    await cb.answer()
-    
-    # Переиспользуем обработчик списка слотов
-    new_callback = cb.data.replace("sched_edit_slot_list", "slot_list")
-    new_cb = copy.copy(cb)
-    new_cb.data = new_callback
-    
-    await slot_list_handler(new_cb, actor_tg_id, users, slots, bookings)
+        log.error(f"Error listing students for slot {slot_id}: {e}", exc_info=True)
+        await cb.message.edit_text("❌ Ошибка при получении списка студентов.")
 
 # ================================================================================================
 # 📚 МЕТОДИЧЕСКИЕ МАТЕРИАЛЫ
@@ -689,12 +512,12 @@ async def materials_main_handler(cb: CallbackQuery):
     kb.button(text="⬅️ Назад", callback_data="r=t;a=back_to_main")
     kb.adjust(1)
     
-    text = "📚 <b>Методические материалы</b>\n\n🚧 Функции в разработке\n\nВыберите действие:"
+    text = "📚 <b>Методические материалы</b>\n\nВыберите действие:"
     await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 @router.callback_query(F.data == "r=t;a=syllabus_view")
 async def syllabus_view_handler(cb: CallbackQuery, weeks: WeeksService):
-    """Просмотр тем курса как в /weeks_list"""
+    """Просмотр тем курса"""
     await cb.answer()
     
     try:
@@ -707,45 +530,16 @@ async def syllabus_view_handler(cb: CallbackQuery, weeks: WeeksService):
                 status = row["status_emoji"]
                 deadline_str = row["deadline_date"].strftime('%d.%m.%Y')
                 lines.append(f"<b>{row['week']}. {row['title']}</b>")
-                lines.append(f"   📅 Дедлайн: {deadline_str} {status}")
-                lines.append("")
-            
-            full_text = "\n".join(lines)
-            if len(full_text) > 4000:
-                lines = ["📖 <b>Темы курса (первые 10):</b>\n"]
-                for _, row in weeks_df.head(10).iterrows():
-                    status = row["status_emoji"] 
-                    deadline_str = row["deadline_date"].strftime('%d.%m.%Y')
-                    lines.append(f"<b>{row['week']}. {row['title']}</b>")
-                    lines.append(f"   📅 Дедлайн: {deadline_str} {status}")
-                    lines.append("")
-                
-                if len(weeks_df) > 10:
-                    lines.append(f"... и ещё {len(weeks_df) - 10} тем")
-                    
-                text = "\n".join(lines)
-            else:
-                text = full_text
-            
+                lines.append(f"   {status} Дедлайн: {deadline_str}\n")
+            text = "\n".join(lines)
+        
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data="r=t;a=materials_main")
+        
+        await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception as e:
-        text = f"📖 <b>Темы курса</b>\n\n❌ Ошибка: {str(e)}"
-    
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data="r=t;a=materials_main")
-    
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-@router.callback_query(F.data == "r=t;a=material_upload_pick_week")
-async def material_upload_pick_week_handler(cb: CallbackQuery):
-    """Загрузка материалов - заглушка"""
-    await cb.answer()
-    
-    text = "📤 <b>Загрузка материалов</b>\n\n🚧 Функция в разработке\n\nЗдесь будет возможность загружать материалы по неделям курса."
-    
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data="r=t;a=materials_main")
-    
-    await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+        log.error(f"Error in syllabus_view: {e}")
+        await cb.message.edit_text("❌ Ошибка при загрузке тем курса")
 
 # ================================================================================================
 # 👨‍🎓 СДАЧИ СТУДЕНТОВ
