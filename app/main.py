@@ -17,6 +17,8 @@ from app.services.grade_service import GradeService
 from app.services.slot_service import SlotService
 from app.services.feedback_service import FeedbackService
 from app.services.audit_service import AuditService
+from app.repositories.materials_repo import MaterialsRepo
+from app.services.materials_service import MaterialsService
 from app.services.ta_requests_service import TaRequestsService
 from app.services.users_service import UsersService
 from app.services.ta_prefs_service import TaPrefsService
@@ -53,6 +55,8 @@ async def main() -> None:
     slots = SlotService(cfg.data_dir)
     feedback = FeedbackService(cfg.data_dir)
     audit = AuditService(cfg.data_dir)
+    materials_repo = MaterialsRepo(cfg.data_dir)
+    materials = MaterialsService(materials_repo, storage, audit)
     ta_requests = TaRequestsService(cfg.data_dir)
     users = UsersService(cfg.data_dir)
     ta_prefs = TaPrefsService(cfg.data_dir)
@@ -83,6 +87,7 @@ async def main() -> None:
     dp["slots"] = slots
     dp["feedback"] = feedback
     dp["audit"] = audit
+    dp["materials"] = materials
     dp["ta_requests"] = ta_requests
     dp["users"] = users
     dp["ta_prefs"] = ta_prefs
